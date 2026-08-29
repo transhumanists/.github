@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="480" viewBox="0 0 480 480" role="img" aria-label="transhumanists profile">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a1424"/>
+      <stop offset="1" stop-color="#060b14"/>
+    </linearGradient>
+    <linearGradient id="titleGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00d4ff"/>
+      <stop offset="1" stop-color="#b388ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="480" height="480" rx="20" fill="url(#bg)"/>
+
+  <!-- Header -->
+  <rect width="480" height="80" rx="20" fill="#0d1a2e"/>
+  <rect x="0" y="60" width="480" height="20" fill="#0d1a2e"/>
+  <text x="32" y="52" font-family="system-ui, sans-serif" font-size="26" font-weight="700" fill="url(#titleGrad)">🚀 transhumanists</text>
+  <text x="32" y="70" font-family="monospace" font-size="10" fill="#8ba3c7">Human Progress. Quantified.</text>
+
+  <!-- Categories grid (2x3 + 1) -->
+  <g transform="translate(24, 100)">
+    <!-- Row 1 -->
+    <g transform="translate(0,0)">
+      <rect width="200" height="96" rx="10" fill="#0a1424" stroke="#1a2d47"/>
+      <text x="14" y="22" font-size="10" font-weight="700" fill="#00e676" font-family="monospace">🧬 BIOTECH</text>
+      <text x="14" y="42" font-size="12" font-weight="600" fill="#e8f0fe" font-family="system-ui">CRISPR in-vivo</text>
+      <text x="14" y="68" font-size="20" font-weight="700" fill="#00e676" font-family="monospace">94.2<tspan font-size="11" fill="#8ba3c7">% · Broad</tspan></text>
+      <circle cx="186" cy="12" r="3" fill="#ff9100"/>
+    </g>
+    <g transform="translate(216,0)">
+      <rect width="200" height="96" rx="10" fill="#0a1424" stroke="#1a2d47"/>
+      <text x="14" y="22" font-size="10" font-weight="700" fill="#448aff" font-family="monospace">🧠 AI/AGI</text>
+      <text x="14" y="42" font-size="12" font-weight="600" fill="#e8f0fe" font-family="system-ui">MMLU benchmark</text>
+      <text x="14" y="68" font-size="20" font-weight="700" fill="#448aff" font-family="monospace">94.7<tspan font-size="11" fill="#8ba3c7">% · GPT-6</tspan></text>
+    </g>
+    <!-- Row 2 -->
+    <g transform="translate(0,108)">
+      <rect width="200" height="96" rx="10" fill="#0a1424" stroke="#1a2d47"/>
+      <text x="14" y="22" font-size="10" font-weight="700" fill="#b388ff" font-family="monospace">⚛️ QUANTUM</text>
+      <text x="14" y="42" font-size="12" font-weight="600" fill="#e8f0fe" font-family="system-ui">Physical qubits</text>
+      <text x="14" y="68" font-size="20" font-weight="700" fill="#b388ff" font-family="monospace">4,158<tspan font-size="11" fill="#8ba3c7"> · IBM</tspan></text>
+    </g>
+    <g transform="translate(216,108)">
+      <rect width="200" height="96" rx="10" fill="#0a1424" stroke="#1a2d47"/>
+      <text x="14" y="22" font-size="10" font-weight="700" fill="#ffd740" font-family="monospace">⚡ ENERGY</text>
+      <text x="14" y="42" font-size="12" font-weight="600" fill="#e8f0fe" font-family="system-ui">Fusion Q-factor</text>
+      <text x="14" y="68" font-size="20" font-weight="700" fill="#ffd740" font-family="monospace">17.6<tspan font-size="11" fill="#8ba3c7">Q · NIF</tspan></text>
+    </g>
+    <!-- Row 3 -->
+    <g transform="translate(0,216)">
+      <rect width="200" height="96" rx="10" fill="#0a1424" stroke="#1a2d47"/>
+      <text x="14" y="22" font-size="10" font-weight="700" fill="#ff5252" font-family="monospace">🛡️ CYBER</text>
+      <text x="14" y="42" font-size="12" font-weight="600" fill="#e8f0fe" font-family="system-ui">Highest CVSS</text>
+      <text x="14" y="68" font-size="20" font-weight="700" fill="#ff5252" font-family="monospace">10.0<tspan font-size="11" fill="#8ba3c7"> CRIT · CISA</tspan></text>
+    </g>
+    <g transform="translate(216,216)">
+      <rect width="200" height="96" rx="10" fill="#0a1424" stroke="#1a2d47"/>
+      <text x="14" y="22" font-size="10" font-weight="700" fill="#00d4ff" font-family="monospace">🚀 SPACE</text>
+      <text x="14" y="42" font-size="12" font-weight="600" fill="#e8f0fe" font-family="system-ui">Starship to LEO</text>
+      <text x="14" y="68" font-size="20" font-weight="700" fill="#00d4ff" font-family="monospace">156<tspan font-size="11" fill="#8ba3c7">t · SpaceX</tspan></text>
+    </g>
+  </g>
+
+  <!-- Defense bar -->
+  <g transform="translate(24, 420)">
+    <rect width="416" height="32" rx="8" fill="#0a1424" stroke="#1a2d47"/>
+    <text x="14" y="20" font-size="10" font-weight="700" fill="#ff9100" font-family="monospace">🌍 DEFENSE</text>
+    <text x="100" y="20" font-size="11" fill="#e8f0fe" font-family="system-ui">NATO force: 300k · ICBM: 15,000km · Iron Dome: 96.8%</text>
+  </g>
+
+  <!-- FPM Brand Footer -->
+  <g transform="translate(476, 466)">
+    <a href="https://frenzypenguin-media.github.io" target="_blank">
+      <text x="0" y="0" font-size="9" fill="#4d6480" font-family="monospace" text-anchor="end" letter-spacing="0.5">FrenzyPenguin Media</text>
+    </a>
+  </g>
+</svg>

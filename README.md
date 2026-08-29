@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/transhumanists/.github/main/profile.svg" alt="transhumanists" width="480">
+
 # 🧬 transhumanists
 
 ### **Human Progress. Quantified.**
