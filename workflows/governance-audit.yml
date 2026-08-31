@@ -1,0 +1,85 @@
+name: governance-audit
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: governance audit (strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run governance audit (strict)
+        run: python docs/audit_governance.py --strict
+
+      - name: Auto-fix any strict issues
+        if: failure()
+        run: python docs/audit_governance.py --strict --fix --dry-run
+
+      - name: Verify inventory
+        run: python docs/inventory.py --skip-flows
+
+      - name: Run unit tests
+        run: |
+          pip install pytest
+          python -m pytest docs/test_audit_governance.py docs/test_inventory.py -q
+
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check docs/ --no-cache
+
+      - name: Type check (mypy)
+        run: |
+          pip install mypy || exit 1
+          mypy docs/
+
+  inventory:
+    name: regenerate inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run inventory (workspace + per-org)
+        run: |
+          python docs/inventory.py --dry-run
+          python docs/inventory.py --per-org --dry-run
+
+      - name: Detect drift
+        run: |
+          python docs/inventory.py
+          python docs/inventory.py --per-org
+          if ! git diff --quiet docs/REPO_TREE.md docs/FLOW_TREE.md; then
+            echo "::error::REPO_TREE.md or FLOW_TREE.md is out of date."
+            echo "Run 'python docs/inventory.py' locally and commit the result."
+            git diff --stat docs/REPO_TREE.md docs/FLOW_TREE.md
+            exit 1
+          fi
+          for f in docs/REPO_TREE_*.md; do
+            if ! git diff --quiet "$f"; then
+              echo "::error::$f is out of date."
+              git diff --stat "$f"
+              exit 1
+            fi
+          done

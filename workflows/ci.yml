@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck python3-pip
+          pip3 install --quiet pylint pyyaml
+      - name: ShellCheck install.sh (errors)
+        run: shellcheck -S error install.sh
+      - name: ShellCheck all (warnings)
+        run: |
+          for f in $(find . -name "*.sh" -not -path "*/.git/*"); do
+            echo "Checking $f"
+            shellcheck -S warning "$f" || true
+          done
+      - name: PyLint torrc.tpl
+        run: pylint --rcfile=tests/.pylintrc --disable=all --enable=error torrc.tpl
+      - name: PyLint tray/tray.py
+        run: pylint --rcfile=tests/.pylintrc --disable=all --enable=error tray/tray.py
+      - name: Validate YAML
+        run: |
+          pip3 install --quiet yamllint
+          yamllint -d "{extends: default, rules: {line-length: {max: 200}}}" \
+            .github/ manifests/ docker/ 2>/dev/null || true
+      - name: Validate JSON
+        run: |
+          for f in $(find . -name "*.json" -not -path "*/.git/*" -not -path "*/node_modules/*" -not -path "*/.gradle/*"); do
+            python3 -c "import json; json.load(open('$f'))" || { echo "Invalid JSON: $f"; exit 1; }
+          done
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tor python3 python3-pip
+          sudo systemctl stop tor || true
+          pip3 install --quiet stem psutil pyyaml
+      - name: Test torrc generation
+        run: python3 torrc.tpl /tmp/test-torrc --relay 1 --exit 0 --bridge 0 --nick TestRelay --contact test@neohiro.net --orport 9001 --dirport 9030 --socks 9050 --dns 9053 --control 9051 --cpport 9052 --cpPw testpass --hardened 0 --bandwidth "5 MB" --tailscale 0 --tailscale-exit 0
+      - name: Validate torrc syntax
+        run: |
+          grep -E '^[A-Z][A-Za-z]+ ' /tmp/test-torrc | head -5
+          grep -c '^SOCKSPort' /tmp/test-torrc
+          grep -c '^ORPort' /tmp/test-torrc
+      - name: Test torrc client-only mode
+        run: python3 torrc.tpl /tmp/test-torrc-client --relay 0 --exit 0 --bridge 0 --nick "" --contact "" --orport 9001 --dirport 9030 --socks 9050 --dns 9053 --control 9051 --cpport 9052 --cpPw "" --hardened 0 --bandwidth "1 GBytes" --tailscale 0 --tailscale-exit 0
+      - name: Test torrc bridge mode
+        run: python3 torrc.tpl /tmp/test-torrc-bridge --relay 0 --exit 0 --bridge 1 --nick MyBridge --contact bridge@neohiro.net --orport 9001 --dirport 9030 --socks 9050 --dns 9053 --control 9051 --cpport 9052 --cpPw "" --hardened 0 --bandwidth "1 GBytes" --tailscale 0 --tailscale-exit 0
+      - name: Run shell integration tests
+        run: bash tests/run.sh
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-22.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+      - name: CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - uses: github/codeql-action/analyze@v3

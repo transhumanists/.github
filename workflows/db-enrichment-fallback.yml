@@ -1,0 +1,394 @@
+# .github/workflows/db-enrichment-fallback.yml
+#
+# SINGLE cross-repo GitHub Actions fallback for database enrichment cycles.
+# See DATABASE_ENRICHMENT.md for the full two-tier architecture.
+#
+# This workflow is the ONLY .yml that handles enrichment fallback for the
+# four orgs (neohiro, FrenzyPenguin, openstageisland, transhumanists).
+# Heart process is the primary; this fires only when Heart is unreachable.
+#
+# BUDGET: every 30 min × ~4 min max duration × 30 days = ~144 min/month
+# (vs 2,000 free-tier cap for private repos). Fast-exit gate cuts effective
+# usage to ~0 when Heart is alive.
+#
+# PRIVACY: no PII in logs, no LLM calls, no artifact uploads. Heart-only
+# LLM summarisation runs on Tier 1; this workflow is deterministic-only.
+
+name: db-enrichment-fallback
+
+"on":
+  schedule:
+    # Every 30 minutes — primary cadence. Heart process runs every 5 min
+    # on its own cadence (faster than this); this is the safety net.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force-run enrichment even if Heart liveness check passes'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Default environment variables — overridable via repo Settings → Secrets.
+env:
+  NEOHIRO_HEALTH_FILE: 'shared/public/health/heart.json'
+  NEOHIRO_HEALTH_OWNER: 'neohiro'
+  NEOHIRO_HEALTH_REPO: 'network'
+  NEOHIRO_MAX_DURATION: '240'
+
+jobs:
+  # ── Job 1: liveness check (the "fast-end tracks" gate) ────────────────────
+  liveness-check:
+    name: Heart liveness check
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      heart_alive: ${{ steps.check_github_api.outputs.alive == 'true' || steps.check_https.outputs.alive == 'true' }}
+      github_api_alive: ${{ steps.check_github_api.outputs.alive }}
+      github_api_age: ${{ steps.check_github_api.outputs.age }}
+      https_alive: ${{ steps.check_https.outputs.alive }}
+      force_run: ${{ inputs.force == 'true' }}
+    steps:
+      - name: Force-run bypass (workflow_dispatch only)
+        id: force
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "::notice::Force-run requested; bypassing liveness gate"
+            echo "forced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "forced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Check 1: GitHub API — primary, always available from Actions ──
+      - name: Check 1 — GitHub API (heart.json commit age)
+        id: check_github_api
+        if: steps.force.outputs.forced != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          RESP=$(curl -fsS -m 10 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${NEOHIRO_HEALTH_OWNER}/${NEOHIRO_HEALTH_REPO}/commits?path=${NEOHIRO_HEALTH_FILE}&per_page=1" 2>&1)
+          CURL_RC=$?
+          if [ $CURL_RC -ne 0 ]; then
+            echo "::warning::GitHub API liveness check failed (curl rc=$CURL_RC); assuming Heart down"
+            echo "alive=false" >> "$GITHUB_OUTPUT"
+            echo "age=9999" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Extract committer date from first commit
+          TS=$(echo "$RESP" | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              if not data:
+                  print('')
+              else:
+                  print(data[0]['commit']['committer']['date'])
+          except (json.JSONDecodeError, KeyError, IndexError):
+              print('')
+          ")
+          if [ -z "$TS" ]; then
+            echo "alive=false" >> "$GITHUB_OUTPUT"
+            echo "age=9999" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TS_EPOCH=$(date -d "$TS" +%s 2>/dev/null || echo 0)
+          NOW_EPOCH=$(date +%s)
+          AGE=$((NOW_EPOCH - TS_EPOCH))
+          echo "age=$AGE" >> "$GITHUB_OUTPUT"
+          if [ "$AGE" -le 300 ]; then
+            echo "::notice::Heart is ALIVE (heart.json age=${AGE}s ≤ 300s) — fast-exit"
+            echo "alive=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Heart looks DOWN (heart.json age=${AGE}s > 300s); proceeding to HTTPS check"
+            echo "alive=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Check 2: HTTPS GET to /health on the brain node ──
+      # Sleep briefly between checks to avoid a race where the commit just
+      # landed (299s ago) but /health hasn't updated yet.
+      - name: Check 2 — HTTPS GET /health (brain node direct)
+        id: check_https
+        if: steps.check_github_api.outputs.alive != 'true' && steps.force.outputs.forced != 'true'
+        env:
+          HEART_HEALTH_URL: ${{ secrets.HEART_HEALTH_URL }}
+        run: |
+          sleep 2
+          if [ -z "${HEART_HEALTH_URL}" ]; then
+            echo "::warning::HEART_HEALTH_URL secret not set; treating as down"
+            echo "alive=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          HTTP_CODE=$(curl -fsS -m 5 -o /dev/null -w "%{http_code}" \
+            "${HEART_HEALTH_URL}/health" 2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" = "000" ] || [ "$HTTP_CODE" -ge 400 ] 2>/dev/null; then
+            echo "::notice::HTTPS check failed (code=$HTTP_CODE); Heart is DOWN — engaging fallback"
+            echo "alive=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::HTTPS check returned $HTTP_CODE — Heart is ALIVE"
+            echo "alive=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        run: |
+          echo "::group::Liveness summary"
+          echo "GitHub API alive: ${{ steps.check_github_api.outputs.alive }} (age=${NEOHIRO_HEALTH_FILE}@${{ steps.check_github_api.outputs.age }}s)"
+          echo "HTTPS alive: ${{ steps.check_https.outputs.alive }}"
+          echo "Heart ALIVE: ${{ steps.check_github_api.outputs.alive == 'true' || steps.check_https.outputs.alive == 'true' }}"
+          echo "Force run: ${{ steps.force.outputs.forced }}"
+          echo "::endgroup::"
+
+  # ── Job 2: cross-repo discovery (only if Heart is down) ───────────────────
+  discover:
+    name: Discover userdata summaries (cross-org)
+    needs: liveness-check
+    if: needs.liveness-check.outputs.heart_alive != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      has_summaries: ${{ steps.scan.outputs.has_summaries }}
+      login_count: ${{ steps.scan.outputs.login_count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Discover summaries
+        id: scan
+        env:
+          NEOHIRO_SUMMARIES_ROOT: ${{ secrets.NEOHIRO_SUMMARIES_ROOT }}
+        run: |
+          python3 - <<'PYEOF'
+          """Scan known orgs (neohiro, frenzypenguin-media, openstageisland,
+          transhumanists) for userdata summaries. Read-only; no writes."""
+          import json, os, re, sys
+          from pathlib import Path
+
+          root = Path(os.environ.get("NEOHIRO_SUMMARIES_ROOT", "/tmp/no-summaries"))
+          if not root.exists():
+              print("::notice::No summaries root configured; skipping")
+              print(f"has_summaries=false\nlogin_count=0", file=sys.stderr)
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                  f.write("has_summaries=false\nlogin_count=0\n")
+              sys.exit(0)
+
+          # Mirror the run.py login-safety regex so we never advertise unsafe names.
+          safe_login = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+          summaries_root = root / "userdata" / "summaries"
+          logins = set()
+          if summaries_root.exists():
+              for d in summaries_root.iterdir():
+                  if d.is_dir() and d.name not in (".", "..") and safe_login.match(d.name):
+                      logins.add(d.name)
+
+          print(f"::notice::Found {len(logins)} login directories")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"has_summaries={'true' if logins else 'false'}\n")
+              f.write(f"login_count={len(logins)}\n")
+          PYEOF
+
+  # ── Job 3: run deterministic enrichment (only if Heart is down) ───────────
+  enrich-userdata:
+    name: Enrich user profiles (deterministic only)
+    needs: [liveness-check, discover]
+    if: needs.liveness-check.outputs.heart_alive != 'true' && needs.discover.outputs.has_summaries == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      NEOHIRO_SHARED_ROOT: /tmp/shared
+      NEOHIRO_LLM_AVAILABLE: '0'   # explicit: NO LLM in fallback
+      NEOHIRO_SUMMARIES_ROOT: /tmp/shared
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff (for lint)
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet ruff
+
+      - name: Pull summaries to writable location
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEOHIRO_SUMMARIES_REPO: ${{ vars.NEOHIRO_SUMMARIES_REPO || 'neohiro/userdata' }}
+        run: |
+          set -e
+          git clone --depth 1 --filter=blob:none --sparse \
+            "https://x-access-token:${GH_TOKEN}@github.com/${NEOHIRO_SUMMARIES_REPO}.git" \
+            /tmp/summaries_src || {
+            echo "::warning::git clone failed (rc=$?) — no summaries available"
+            exit 0
+          }
+          cd /tmp/summaries_src
+          git sparse-checkout set data/summaries 2>/dev/null || {
+            echo "::warning::sparse-checkout failed"
+          }
+          mkdir -p /tmp/shared/userdata
+          if [ -d data/summaries ]; then
+            cp -r data/summaries /tmp/shared/userdata/
+            echo "::notice::Copied $(find /tmp/shared/userdata/summaries -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) login directories"
+          else
+            echo "::notice::data/summaries not found in clone"
+          fi
+
+      - name: Lint dispatcher
+        run: ruff check Heart/scripts/userdata-enrich/run.py --select=BLE
+
+      - name: Run dispatcher (deterministic only)
+        run: |
+          python Heart/scripts/userdata-enrich/run.py --quiet --once
+
+      - name: Verify outputs (privacy + structure)
+        run: |
+          python3 - <<'PYEOF'
+          """Privacy invariant check: no PII in any enrichment file."""
+          import sys
+          from pathlib import Path
+          FORBIDDEN = ("ip", "email", "phone", "raw_name", "address", "password")
+          enrich_dir = Path("/tmp/shared/userdata/enrichments")
+          if not enrich_dir.exists():
+              print("::error::No enrichment files produced")
+              sys.exit(1)
+          files = list(enrich_dir.glob("*.yaml"))
+          print(f"::notice::Enriched {len(files)} profiles")
+          violations = 0
+          for f in files:
+              raw = f.read_text(encoding="utf-8", errors="ignore")
+              # Heuristic: search for raw-IP / raw-email patterns
+              import re
+              ip_re = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+              email_re = re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
+              if ip_re.search(raw):
+                  print(f"::error::PII leak: raw IP in {f.name}")
+                  violations += 1
+              if email_re.search(raw):
+                  print(f"::error::PII leak: raw email in {f.name}")
+                  violations += 1
+          sys.exit(1 if violations else 0)
+          PYEOF
+
+      - name: Persist enrichment (PR back to neohiro/userdata if changed)
+        if: env.NEOHIRO_PERSIST == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Off by default — the on-disk enrichment is what Heart consumes
+          # directly via /shared. Enabling this would create a feedback loop
+          # and count against the budget. Set NEOHIRO_PERSIST=1 only for
+          # cross-org mirror scenarios.
+          echo "Persistence disabled by default"
+          # Placeholder: see DATABASE_ENRICHMENT.md § 9 for the
+          # cross-org mirror workflow (separate, opt-in).
+
+  # ── Job 4: refresh cross-org DB mirror (news, osint, links, tools) ───────
+  enrich-db-mirror:
+    name: Refresh cross-org DB mirror
+    needs: liveness-check
+    if: needs.liveness-check.outputs.heart_alive != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      NEOHIRO_SHARED_ROOT: /tmp/shared
+      NEOHIRO_LLM_AVAILABLE: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refresh DB mirror (deterministic only)
+        run: |
+          # This job aggregates the existing /shared caches (if any) into
+          # a single consolidated manifest at /tmp/shared/db_mirror.json.
+          # Deterministic; no LLM. Per DATABASE_ENRICHMENT.md § 2.
+          python3 - <<'PYEOF'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path(os.environ.get("NEOHIRO_SHARED_ROOT", "/tmp/shared"))
+          mirror = {
+              # UTC ISO-8601 with literal Z — %Z in strftime yields locale names
+              # like "EST" on some platforms, which downstream parsers reject.
+              "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "tier": "fallback",
+              "orgs": ["neohiro", "frenzypenguin-media", "openstageisland", "transhumanists"],
+              "datasets": {},
+          }
+          for ds in ("news", "osint", "links", "tools"):
+              p = root / ds
+              if p.exists():
+                  files = 0
+                  bytes_total = 0
+                  for f in p.rglob("*"):
+                      if f.is_file():
+                          files += 1
+                          try:
+                              bytes_total += f.stat().st_size
+                          except OSError:
+                              pass
+                  mirror["datasets"][ds] = {"files": files, "bytes": bytes_total}
+              else:
+                  mirror["datasets"][ds] = {"files": 0, "bytes": 0, "missing": True}
+          out = root / "db_mirror.json"
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(mirror, indent=2))
+          print(f"::notice::Wrote {out} ({out.stat().st_size} bytes)")
+          PYEOF
+
+      - name: Output manifest
+        if: success()
+        run: |
+          if [ -f /tmp/shared/db_mirror.json ]; then
+            echo "## DB Mirror Manifest" >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/shared/db_mirror.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ── Final summary job (always runs, regardless of liveness) ───────────────
+  summary:
+    name: Run summary
+    needs: [liveness-check, discover, enrich-userdata, enrich-db-mirror]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Emit summary
+        run: |
+          echo "## db-enrichment-fallback run" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Heart liveness check: \`${{ needs.liveness-check.outputs.heart_alive }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitHub API alive: \`${{ needs.liveness-check.outputs.github_api_alive }}\` (age=${{ needs.liveness-check.outputs.github_api_age }}s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- HTTPS alive: \`${{ needs.liveness-check.outputs.https_alive }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Discovered login count: \`${{ needs.discover.outputs.login_count || 0 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Userdata enrichment job: \`${{ needs.enrich-userdata.result }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DB mirror job: \`${{ needs.enrich-db-mirror.result }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.liveness-check.outputs.heart_alive }}" = "true" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> **Fast-exit**: Heart is alive. No enrichment work was done; ~0 minutes used." >> "$GITHUB_STEP_SUMMARY"
+          fi

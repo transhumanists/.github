@@ -1,0 +1,291 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.4.8.12)'
+        required: true
+        default: 'v0.4.8.12'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  TOR_VERSION: 0.4.8.12
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install linters
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck python3-pip yamllint jq
+          pip3 install --quiet pylint
+      - name: ShellCheck install.sh (errors only)
+        run: shellcheck -S error install.sh
+      - name: ShellCheck all (warnings)
+        run: |
+          for f in $(find . -name "*.sh" -not -path "*/.git/*"); do
+            echo "Checking $f"
+            shellcheck -S warning "$f" || true
+          done
+      - name: PyLint torrc.tpl + tray.py
+        run: |
+          pylint --rcfile=tests/.pylintrc --disable=all --enable=error torrc.tpl tray/tray.py || true
+      - name: Validate JSON
+        run: |
+          for f in $(find . -name "*.json" -not -path "*/.git/*" -not -path "*/.gradle/*" -not -path "*/build/*" 2>/dev/null); do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" || { echo "Invalid: $f"; exit 1; }
+          done
+      - name: Validate YAML
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: {max: 200}}}" .github/ manifests/ 2>/dev/null || true
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tor python3 python3-pip
+          sudo systemctl stop tor 2>/dev/null || true
+          sudo systemctl disable tor 2>/dev/null || true
+          pip3 install --quiet stem psutil pyyaml
+      - name: Test torrc.tpl
+        run: python3 torrc.tpl /tmp/test-torrc --relay 0 --exit 0 --bridge 0 --nick "" --contact "" --orport 9001 --dirport 9030 --socks 9050 --dns 9053 --control 9051 --cpport 9052 --cpPw "" --hardened 0 --bandwidth "1 GBytes" --tailscale 0 --tailscale-exit 0
+      - name: Test torrc hardened
+        run: python3 torrc.tpl /tmp/test-torrc-h --relay 0 --exit 0 --bridge 0 --nick "" --contact "" --orport 9001 --dirport 9030 --socks 9050 --dns 9053 --control 9051 --cpport 9052 --cpPw "" --hardened 1 --bandwidth "1 GBytes" --tailscale 0 --tailscale-exit 0
+      - name: Run test suite
+        run: python3 tests/run.py
+      - name: install.sh --help
+        run: sh install.sh --help | head -50
+
+  build-linux:
+    name: Build Linux
+    needs: [lint, test]
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux-amd64, linux-arm64, linux-armv7, linux-i386]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Tor binary
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          mkdir -p dist/bin dist/share dist/tray dist/service dist/docker
+          cp install.sh torrc.tpl dist/
+          cp -r tray service docker dist/
+          cp LICENSE README.md dist/
+          mkdir -p dist/share/tor
+          cp torrc.tpl dist/share/tor/torrc.default
+          case "${{ matrix.target }}" in
+            linux-amd64)  ARCH="linux-amd64"  ;;
+            linux-arm64)  ARCH="linux-arm64"  ;;
+            linux-armv7)  ARCH="linux-armv7l" ;;
+            linux-i386)   ARCH="linux-i386"   ;;
+          esac
+          curl -fSL "https://dist.torproject.org/tor-${TOR_VERSION}-${ARCH}.tar.gz" -o /tmp/tor.tar.gz
+          mkdir -p /tmp/tor && tar xzf /tmp/tor.tar.gz -C /tmp/tor
+          TOR_BIN=$(find /tmp/tor -type f -name tor -perm -u+x 2>/dev/null | head -1)
+          cp "$TOR_BIN" dist/bin/tor && chmod +x dist/bin/tor
+      - name: Package tarball
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          cd dist
+          tar czf "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.tar.gz" .
+          sha256sum "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.tar.gz" \
+            > "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neohiro-tor-${{ matrix.target }}
+          path: neohiro-tor-*.tar.gz*
+
+  build-macos:
+    name: Build macOS
+    needs: [lint, test]
+    runs-on: ${{ matrix.target == 'darwin-arm64' && 'macos-14' || 'macos-13' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin-x86_64, darwin-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Tor binary
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          mkdir -p dist/bin dist/share dist/tray dist/service dist/docker
+          cp install.sh torrc.tpl dist/
+          cp -r tray service docker dist/
+          cp LICENSE README.md dist/
+          case "${{ matrix.target }}" in
+            darwin-x86_64)  ARCH="darwin-x86_64" ;;
+            darwin-arm64)   ARCH="darwin-arm64"  ;;
+          esac
+          curl -fSL "https://dist.torproject.org/tor-${TOR_VERSION}-${ARCH}.tar.gz" -o /tmp/tor.tar.gz
+          mkdir -p /tmp/tor && tar xzf /tmp/tor.tar.gz -C /tmp/tor
+          TOR_BIN=$(find /tmp/tor -type f -name tor -perm -u+x 2>/dev/null | head -1)
+          cp "$TOR_BIN" dist/bin/tor && chmod +x dist/bin/tor
+      - name: Package tarball
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          cd dist
+          tar czf "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.tar.gz" .
+          shasum -a 256 "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.tar.gz" \
+            > "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.tar.gz.sha256"
+      - name: Build DMG
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          cd dist
+          hdiutil create -volname "Neohiro Tor" -srcfolder . -ov -format UDZO \
+            "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.dmg"
+          shasum -a 256 "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.dmg" \
+            > "../neohiro-tor-${TOR_VERSION}-${{ matrix.target }}.dmg.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neohiro-tor-${{ matrix.target }}
+          path: |
+            neohiro-tor-*.tar.gz*
+            neohiro-tor-*.dmg*
+            !*.sha256
+
+  build-windows:
+    name: Build Windows
+    needs: [lint, test]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/bin, dist/share, dist/tray, dist/service, dist/docker | Out-Null
+          Copy-Item install.sh, torrc.tpl, LICENSE, README.md dist/
+          Copy-Item -Recurse tray, service, docker dist/
+      - name: Download Tor binary
+        shell: pwsh
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          $url = "https://dist.torproject.org/tor-${env:TOR_VERSION}-win-x86_64.zip"
+          Invoke-WebRequest -Uri $url -OutFile tor.zip -UseBasicParsing
+          Expand-Archive -Force tor.zip -DestinationPath tor-extract
+          $bin = Get-ChildItem -Recurse -Path tor-extract -Filter tor.exe | Select-Object -First 1
+          if (-not $bin) { throw "tor.exe not found in archive" }
+          Copy-Item $bin.FullName dist/bin/tor.exe
+      - name: Build MSI
+        shell: pwsh
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          nuget install WiX.Toolset -Version 3.14.0 -OutputDirectory packages -ExcludeVersion
+          $candle = (Resolve-Path "packages/WiX.Toolset/tools/wix/*/candle.exe").Path
+          $light  = (Resolve-Path "packages/WiX.Toolset/tools/wix/*/light.exe").Path
+          & $candle -arch x64 -dVersion="$env:TOR_VERSION" build/msi/Product.wxs -o build/msi/
+          & $light -ext WixUiExtension -cultures:en-US build/msi/Product.wixobj `
+            -o "neohiro-tor-$env:TOR_VERSION-win-x86_64.msi"
+          $hash = (Get-FileHash "neohiro-tor-$env:TOR_VERSION-win-x86_64.msi" -Algorithm SHA256).Hash
+          $hash | Out-File -Encoding ascii "neohiro-tor-$env:TOR_VERSION-win-x86_64.msi.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neohiro-tor-windows
+          path: neohiro-tor-*.msi*
+
+  build-apk:
+    name: Build Android APK
+    needs: [lint, test]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Build APK
+        env:
+          TOR_VERSION: ${{ env.TOR_VERSION }}
+        run: |
+          cd build/apk
+          gradle assembleRelease --no-daemon -PtorVersion="${TOR_VERSION}" \
+            || (chmod +x gradlew 2>/dev/null; ./gradlew assembleRelease --no-daemon -PtorVersion="${TOR_VERSION}" 2>/dev/null)
+          cp app/build/outputs/apk/release/app-release-unsigned.apk ../neohiro-tor-${TOR_VERSION}.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neohiro-tor-android
+          path: neohiro-tor-*.apk
+
+  docker:
+    name: Build Docker Image
+    needs: [lint, test]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            neohiro/tor:latest
+            neohiro/tor:${{ env.TOR_VERSION }}
+            ghcr.io/neohiro/tor:latest
+            ghcr.io/neohiro/tor:${{ env.TOR_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Publish Release
+    needs: [build-linux, build-macos, build-windows, build-apk, docker]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: neohiro-tor-*
+          merge-multiple: true
+      - name: Show artifacts
+        run: ls -la artifacts/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Neohiro Tor ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sha256
+            artifacts/*.dmg
+            artifacts/*.dmg.sha256
+            artifacts/*.msi
+            artifacts/*.msi.sha256
+            artifacts/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
