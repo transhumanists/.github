@@ -1,0 +1,40 @@
+name: Bug report
+description: Report something broken or behaving unexpectedly
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! For security issues,
+        please use the reporting instructions in SECURITY.md instead.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Exact steps to reproduce, expected vs actual behaviour.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Android
+        - Other / multiple
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: v1.2.3 or commit sha
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / console output
+      render: shell
