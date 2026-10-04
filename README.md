@@ -71,3 +71,5 @@ Made with ♥ by **[FrenzyPenguin Media](https://frenzypenguin-media.github.io)*
 A [neohiro](https://github.com/neohiro) project · Powered by neohiro/apis
 
 </div>
+
+[![Visitors](https://api.visitorbadge.io/api/visitors?path=github.com/transhumanists/.github&label=Visitors&countColor=%23263759)](https://visitorbadge.io/status?path=github.com/transhumanists/.github)
