@@ -104,7 +104,7 @@ researcher, a scroller, a skeptic or a builder.
 
 - 📣 **Spotted a record we missed?** [Open an issue](https://github.com/transhumanists/milestones/issues) with the source, the category, the value + unit, and the date. That is the whole checklist.
 - 🔧 **Got a feed we should be reading?** Add it — [open an issue on `apis`](https://github.com/transhumanists/apis/issues) or send a PR.
-- 💬 **Want to argue about the map?** [Discussions are open](https://github.com/transhumanists/milestones/discussions), and issue trackers are open on every repo below.
+- 💬 **Want to argue about the map?** [Open an issue on `milestones`](https://github.com/transhumanists/milestones/issues) — that is where corrections and arguments live, and every tracker below is open too.
 - 🔭 **Just want the signal?** Follow the daily digest on [Facebook](https://facebook.com/transhumanistsBE), or bookmark [transhumanists.github.io](https://transhumanists.github.io) and come back when a vertical moves.
 - 💖 **Want to pay for the scrapers?** The 6-hourly pipeline runs on LLM API and hosting costs — [sponsor it](https://github.com/sponsors/neohiro).
 
